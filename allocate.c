@@ -245,3 +245,10 @@ void clear_shadow_stack(){
 	}
 }
 
+shadow_stack *get_shadow_stack(){
+	return stack;
+}
+
+void set_shadow_stack(shadow_stack *next_stack){
+	stack = next_stack;
+}

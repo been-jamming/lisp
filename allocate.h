@@ -77,4 +77,6 @@ void decrement_references(int data_index);
 int push_shadow_stack(int data_index);
 int pop_shadow_stack();
 void clear_shadow_stack();
+shadow_stack *get_shadow_stack();
+void set_shadow_stack(shadow_stack *next_stack);
 

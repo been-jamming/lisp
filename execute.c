@@ -238,6 +238,108 @@ int set_variable(char *var_name, int data_index){
 	}
 }
 
+int evaluate_q_expression(int data_index, int expand_q_expr);
+
+int execute_s_expr(int data_index){
+	int *entries;
+	int *next_entries;
+	int next_data_index;
+	int output;
+	int i;
+	int made_scope = 0;
+	shadow_stack *first_entry;
+	shadow_stack *prev_shadow_stack;
+	shadow_stack *current_shadow_stack;
+
+	push_shadow_stack(data_index);
+	data_heap[data_index].num_references++;
+	do{
+		if(data_heap[data_index].num_entries == 0){
+			return -1;
+		}
+		entries = malloc(sizeof(int)*data_heap[data_index].num_entries);
+		if(!entries){
+			return -1;
+		}
+		for(i = 0; i < data_heap[data_index].num_entries; i++){
+			entries[i] = evaluate_q_expression(data_heap[data_index].entries[i], 0);
+			if(entries[i] == -1){
+				return -1;
+			}
+			push_shadow_stack(entries[i]);
+		}
+		prev_shadow_stack = get_shadow_stack();
+		if(data_heap[entries[0]].type == FUNCTION && !next_scope()){
+			return -1;
+		} else if(data_heap[entries[0]].type == FUNCTION){
+			made_scope = 1;
+		}
+		while(data_heap[entries[0]].type == FUNCTION){
+			clear_scope();
+			if(data_heap[data_heap[entries[0]].var_list].type != Q_EXPR){
+				return -1;
+			}
+			if(data_heap[data_heap[entries[0]].var_list].num_entries != data_heap[data_index].num_entries - 1){
+				return -1;
+			}
+			for(i = 0; i < data_heap[data_heap[entries[0]].var_list].num_entries; i++){
+				if(data_heap[data_heap[data_heap[entries[0]].var_list].entries[i]].type != IDENTIFIER){
+					return -1;
+				}
+				if(!set_variable(data_heap[data_heap[data_heap[entries[0]].var_list].entries[i]].identifier_name, entries[i + 1])){
+					return -1;
+				}
+			}
+			next_data_index = data_heap[entries[0]].source;
+			if(data_heap[next_data_index].type != Q_EXPR){
+				return -1;
+			}
+			if(data_heap[next_data_index].num_entries == 0){
+				return -1;
+			}
+			push_shadow_stack(next_data_index);
+			data_heap[next_data_index].num_references++;
+			first_entry = get_shadow_stack();
+			next_entries = malloc(sizeof(int)*data_heap[next_data_index].num_entries);
+			if(!next_entries){
+				return -1;
+			}
+			for(i = 0; i < data_heap[next_data_index].num_entries; i++){
+				next_entries[i] = evaluate_q_expression(data_heap[next_data_index].entries[i], 0);
+				if(next_entries[i] == -1){
+					return -1;
+				}
+				push_shadow_stack(next_entries[i]);
+			}
+			current_shadow_stack = get_shadow_stack();
+			set_shadow_stack(prev_shadow_stack);
+			for(i = 0; i < data_heap[data_index].num_entries; i++){
+				decrement_references(pop_shadow_stack());
+			}
+			decrement_references(pop_shadow_stack());
+			free(entries);
+			entries = next_entries;
+			data_index = next_data_index;
+			first_entry->previous = get_shadow_stack();
+			set_shadow_stack(current_shadow_stack);
+			prev_shadow_stack = current_shadow_stack;
+		}
+		if(data_heap[entries[0]].type != BUILTIN_FUNCTION){
+			return -1;
+		}
+		output = data_heap[entries[0]].builtin_function(data_heap[data_index].num_entries, entries);
+		for(i = 0; i < data_heap[data_index].num_entries; i++){
+			decrement_references(pop_shadow_stack());
+		}
+		decrement_references(pop_shadow_stack());
+		free(entries);
+	} while(0);//add while here
+	if(made_scope){
+		previous_scope();
+	}
+	return output;
+}
+
 int evaluate_q_expression(int data_index, int expand_q_expr){
 	int output;
 	int *entries = NULL;
@@ -248,6 +350,9 @@ int evaluate_q_expression(int data_index, int expand_q_expr){
 	int original_data_index;
 	scope *search_scope;
 	variable *var;
+	shadow_stack *current_shadow_stack;
+	shadow_stack *prev_shadow_stack;
+	shadow_stack *first_entry;
 
 	switch(data_heap[data_index].type){
 		case INT_DATA:
@@ -272,6 +377,13 @@ int evaluate_q_expression(int data_index, int expand_q_expr){
 			return -1;
 		case Q_EXPR:
 		case S_EXPR:
+			if(data_heap[data_index].type == S_EXPR || expand_q_expr){
+				return execute_s_expr(data_index);
+			} else {
+				data_heap[data_index].num_references++;
+				return data_index;
+			}
+			/*
 			if(data_heap[data_index].type == S_EXPR || expand_q_expr){
 				if(data_heap[data_index].num_entries == 0){
 					return -1;
@@ -324,6 +436,7 @@ int evaluate_q_expression(int data_index, int expand_q_expr){
 				data_heap[data_index].num_references++;
 				return data_index;
 			}
+			*/
 		case BUILTIN_FUNCTION:
 		case FUNCTION:
 			data_heap[data_index].num_references++;
@@ -863,10 +976,10 @@ int main(int argc, char **argv){
 		}
 
 		print_value(result);
-		printf("\n");
 		pop_shadow_stack();
 		decrement_references(data);
 		decrement_references(result);
+		printf("\nnum_allocated: %d\n", num_allocated);
 	}
 
 	return 0;
