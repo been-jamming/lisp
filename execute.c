@@ -244,16 +244,19 @@ int execute_s_expr(int data_index){
 	int *entries;
 	int *next_entries;
 	int next_data_index;
+	int original_data_index;
 	int output;
 	int i;
 	int made_scope = 0;
+	int tail_call;
 	shadow_stack *first_entry;
 	shadow_stack *prev_shadow_stack;
 	shadow_stack *current_shadow_stack;
 
-	push_shadow_stack(data_index);
 	data_heap[data_index].num_references++;
 	do{
+		push_shadow_stack(data_index);
+		tail_call = 0;
 		if(data_heap[data_index].num_entries == 0){
 			return -1;
 		}
@@ -269,13 +272,13 @@ int execute_s_expr(int data_index){
 			push_shadow_stack(entries[i]);
 		}
 		prev_shadow_stack = get_shadow_stack();
-		if(data_heap[entries[0]].type == FUNCTION && !next_scope()){
-			return -1;
-		} else if(data_heap[entries[0]].type == FUNCTION){
-			made_scope = 1;
-		}
 		while(data_heap[entries[0]].type == FUNCTION){
-			clear_scope();
+			if(!made_scope){
+				if(!next_scope()){
+					return -1;
+				}
+				made_scope = 1;
+			}
 			if(data_heap[data_heap[entries[0]].var_list].type != Q_EXPR){
 				return -1;
 			}
@@ -327,17 +330,18 @@ int execute_s_expr(int data_index){
 		if(data_heap[entries[0]].type != BUILTIN_FUNCTION){
 			return -1;
 		}
-		output = data_heap[entries[0]].builtin_function(data_heap[data_index].num_entries, entries);
+		next_data_index = data_heap[entries[0]].builtin_function(data_heap[data_index].num_entries, entries, &tail_call);
 		for(i = 0; i < data_heap[data_index].num_entries; i++){
 			decrement_references(pop_shadow_stack());
 		}
 		decrement_references(pop_shadow_stack());
 		free(entries);
-	} while(0);//add while here
+		data_index = next_data_index;
+	} while(tail_call);
 	if(made_scope){
 		previous_scope();
 	}
-	return output;
+	return data_index;
 }
 
 int evaluate_q_expression(int data_index, int expand_q_expr){
@@ -447,7 +451,7 @@ int evaluate_q_expression(int data_index, int expand_q_expr){
 	return -1;
 }
 
-int register_builtin_function(char *name, int (*builtin_function)(int, int *)){
+int register_builtin_function(char *name, int (*builtin_function)(int, int *, int *)){
 	int data_index;
 	variable *var;
 
@@ -509,7 +513,7 @@ int data_equal(int b, int a){
 	return 0;
 }
 
-int add(int num_args, int *args){
+int add(int num_args, int *args, int *tail_call){
 	int output = 0;
 	int output_index;
 	int i;
@@ -531,7 +535,7 @@ int add(int num_args, int *args){
 	return output_index;
 }
 
-int multiply(int num_args, int *args){
+int multiply(int num_args, int *args, int *tail_call){
 	int output = 1;
 	int output_index;
 	int i;
@@ -553,7 +557,7 @@ int multiply(int num_args, int *args){
 	return output_index;
 }
 
-int subtract(int num_args, int *args){
+int subtract(int num_args, int *args, int *tail_call){
 	int output;
 	int output_index;
 	int i;
@@ -588,7 +592,7 @@ int subtract(int num_args, int *args){
 	return output_index;
 }
 
-int divide(int num_args, int *args){
+int divide(int num_args, int *args, int *tail_call){
 	int output;
 	int output_index;
 	int i;
@@ -618,7 +622,7 @@ int divide(int num_args, int *args){
 	return output_index;
 }
 
-int lambda(int num_args, int *args){
+int lambda(int num_args, int *args, int *tail_call){
 	int output_index;
 
 	if(num_args != 3){
@@ -638,7 +642,7 @@ int lambda(int num_args, int *args){
 	return output_index;
 }
 
-int set(int num_args, int *args){
+int set(int num_args, int *args, int *tail_call){
 	int i;
 
 	if(data_heap[args[1]].type != Q_EXPR){
@@ -662,7 +666,7 @@ int set(int num_args, int *args){
 	return global_none;
 }
 
-int set_index(int num_args, int *args){
+int set_index(int num_args, int *args, int *tail_call){
 	if(num_args != 4){
 		return -1;
 	}
@@ -680,7 +684,7 @@ int set_index(int num_args, int *args){
 	return global_none;
 }
 
-int equal(int num_args, int *args){
+int equal(int num_args, int *args, int *tail_call){
 	int output = 1;
 	int output_index;
 	int i;
@@ -705,7 +709,7 @@ int equal(int num_args, int *args){
 	return output_index;
 }
 
-int not_equal(int num_args, int *args){
+int not_equal(int num_args, int *args, int *tail_call){
 	int output = 0;
 	int output_index;
 	int i;
@@ -730,17 +734,23 @@ int not_equal(int num_args, int *args){
 	return output_index;
 }
 
-int if_func(int num_args, int *args){
+int if_func(int num_args, int *args, int *tail_call){
 	if((num_args == 3 || num_args == 4) && data_heap[args[1]].type == INT_DATA && data_heap[args[1]].int_value != 0){
+		*tail_call = 1;
+		data_heap[args[2]].num_references++;
+		return args[2];
 		return evaluate_q_expression(args[2], 1);
 	} else if(num_args == 4){
+		*tail_call = 1;
+		data_heap[args[3]].num_references++;
+		return args[3];
 		return evaluate_q_expression(args[3], 1);
 	}
 
 	return -1;
 }
 
-int while_func(int num_args, int *args){
+int while_func(int num_args, int *args, int *tail_call){
 	int data_index;
 
 	if(num_args != 3){
@@ -769,7 +779,7 @@ int while_func(int num_args, int *args){
 	return global_none;
 }
 
-int colon_func(int num_args, int *args){
+int colon_func(int num_args, int *args, int *tail_call){
 	if(num_args == 1){
 		data_heap[global_none].num_references++;
 		return global_none;
@@ -779,7 +789,7 @@ int colon_func(int num_args, int *args){
 	return args[num_args - 1];
 }
 
-int index_func(int num_args, int *args){
+int index_func(int num_args, int *args, int *tail_call){
 	if(num_args != 3){
 		return -1;
 	}
@@ -793,7 +803,7 @@ int index_func(int num_args, int *args){
 	return evaluate_q_expression(data_heap[args[1]].entries[data_heap[args[2]].int_value], 0);
 }
 
-int head(int num_args, int *args){
+int head(int num_args, int *args, int *tail_call){
 	int *new_entries;
 	int *less_entries;
 	int output_index;
@@ -837,7 +847,7 @@ int head(int num_args, int *args){
 	return output_index;
 }
 
-int pop(int num_args, int *args){
+int pop(int num_args, int *args, int *tail_call){
 	int *less_entries;
 	int output_index;
 
@@ -867,7 +877,7 @@ int pop(int num_args, int *args){
 	return output_index;
 }
 
-int push(int num_args, int *args){
+int push(int num_args, int *args, int *tail_call){
 	int *more_entries;
 	int output_index;
 
@@ -895,7 +905,7 @@ int push(int num_args, int *args){
 	return output_index;
 }
 
-int eval(int num_args, int *args){
+int eval(int num_args, int *args, int *tail_call){
 	int output_index = -1;
 	int i;
 

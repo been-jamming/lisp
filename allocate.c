@@ -11,6 +11,7 @@ unsigned int num_allocated;
 scope *global_scope;
 scope *current_scope;
 static shadow_stack *stack;
+static unsigned int shadow_stack_size = 0;
 
 int initialize_heap(int num_entries){
 	int i;
@@ -223,6 +224,7 @@ int push_shadow_stack(int data_index){
 	next->previous = stack;
 	next->data_index = data_index;
 	stack = next;
+	shadow_stack_size++;
 
 	return 1;
 }
@@ -235,6 +237,7 @@ int pop_shadow_stack(){
 	output = stack->data_index;
 	free(stack);
 	stack = previous;
+	shadow_stack_size--;
 
 	return output;
 }
