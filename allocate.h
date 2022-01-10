@@ -27,7 +27,7 @@ struct data{
 			int var_list;
 			int source;
 		};
-		int (*builtin_function)(int, int *, int *);
+		int (*builtin_function)(int, int *);
 	};
 	int num_references;
 };

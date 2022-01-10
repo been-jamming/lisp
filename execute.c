@@ -5,6 +5,11 @@
 #include "dictionary.h"
 
 int global_none;
+static char *error_message = "none";
+
+void set_error(char *err){
+	error_message = err;
+}
 
 int is_whitespace(char c){
 	return c == ' ' || c == '\t' || c == '\r' || c == '\n';
@@ -21,7 +26,7 @@ int is_digit(char c){
 }
 
 int is_identifier_char(char c){
-	return !is_whitespace(c) && c && c != '(' && c != ')' && c != '{' && c != '}';
+	return c && !is_whitespace(c) && c != '(' && c != ')' && c != '{' && c != '}';
 }
 
 int get_integer(char **c){
@@ -54,6 +59,7 @@ char *get_identifier_name(char **c){
 
 	output = malloc(sizeof(char)*(*c - beginning + 1));
 	if(!output){
+		set_error("malloc returned NULL");
 		return NULL;
 	}
 
@@ -152,7 +158,7 @@ int get_quoted_expression(char **c, data_type type){
 
 int get_quoted_value(char **c){
 	skip_whitespace(c);
-	if(is_digit(**c)){
+	if(is_digit(**c) || (**c == '-' && is_digit((*c)[1]))){
 		return get_integer_data(c);
 	} else if(is_identifier_char(**c)){
 		return get_quoted_identifier(c);
@@ -163,6 +169,7 @@ int get_quoted_value(char **c){
 		++*c;
 		return get_quoted_expression(c, Q_EXPR);
 	} else {
+		set_error("unrecognized expression value");
 		return -1;
 	}
 }
@@ -204,10 +211,11 @@ void print_value(int value){
 			printf("[builtin_function]");
 			return;
 		case FUNCTION:
-			printf("[function]:");
+			printf("[function](");
 			print_value(data_heap[value].var_list);
-			printf(",");
+			printf(" ");
 			print_value(data_heap[value].source);
+			printf(")");
 			return;
 	}
 }
@@ -219,11 +227,13 @@ int set_variable(char *var_name, int data_index){
 	if(!var){
 		var = malloc(sizeof(variable));
 		if(!var){
+			set_error("malloc returned NULL");
 			return 0;
 		}
 		var->name = malloc(sizeof(char)*(strlen(var_name) + 1));
 		if(!var->name){
 			free(var);
+			set_error("malloc returned NULL");
 			return 0;
 		}
 		var->data_index = data_index;
@@ -241,122 +251,97 @@ int set_variable(char *var_name, int data_index){
 int evaluate_q_expression(int data_index, int expand_q_expr);
 
 int execute_s_expr(int data_index){
-	int *entries;
-	int *next_entries;
 	int next_data_index;
-	int original_data_index;
-	int output;
+	int identifier_value;
+	int function;
 	int i;
 	int made_scope = 0;
 	int tail_call;
-	shadow_stack *first_entry;
-	shadow_stack *prev_shadow_stack;
-	shadow_stack *current_shadow_stack;
 
-	data_heap[data_index].num_references++;
 	do{
-		push_shadow_stack(data_index);
+		data_heap[data_index].num_references++;
+		if(!push_shadow_stack(data_index)){
+			return -1;
+		}
 		tail_call = 0;
 		if(data_heap[data_index].num_entries == 0){
+			set_error("empty function call");
 			return -1;
 		}
-		entries = malloc(sizeof(int)*data_heap[data_index].num_entries);
-		if(!entries){
+		function = evaluate_q_expression(data_heap[data_index].entries[0], 0);
+		if(function == -1){
 			return -1;
 		}
-		for(i = 0; i < data_heap[data_index].num_entries; i++){
-			entries[i] = evaluate_q_expression(data_heap[data_index].entries[i], 0);
-			if(entries[i] == -1){
-				return -1;
-			}
-			push_shadow_stack(entries[i]);
-		}
-		prev_shadow_stack = get_shadow_stack();
-		while(data_heap[entries[0]].type == FUNCTION){
+		while(data_heap[function].type == FUNCTION){
 			if(!made_scope){
 				if(!next_scope()){
 					return -1;
 				}
 				made_scope = 1;
 			}
-			if(data_heap[data_heap[entries[0]].var_list].type != Q_EXPR){
+			if(data_heap[data_heap[function].var_list].type != Q_EXPR){
+				set_error("expected a Q expression for function variable list");
 				return -1;
 			}
-			if(data_heap[data_heap[entries[0]].var_list].num_entries != data_heap[data_index].num_entries - 1){
+			if(data_heap[data_heap[function].var_list].num_entries != data_heap[data_index].num_entries - 1){
+				set_error("function called with wrong number of arguments");
 				return -1;
 			}
-			for(i = 0; i < data_heap[data_heap[entries[0]].var_list].num_entries; i++){
-				if(data_heap[data_heap[data_heap[entries[0]].var_list].entries[i]].type != IDENTIFIER){
+			for(i = 0; i < data_heap[data_heap[function].var_list].num_entries; i++){
+				if(data_heap[data_heap[data_heap[function].var_list].entries[i]].type != IDENTIFIER){
+					set_error("expected identifier name in function variable list");
 					return -1;
 				}
-				if(!set_variable(data_heap[data_heap[data_heap[entries[0]].var_list].entries[i]].identifier_name, entries[i + 1])){
+				identifier_value = evaluate_q_expression(data_heap[data_index].entries[i + 1], 0);
+				if(identifier_value == -1){
 					return -1;
 				}
+				if(!set_variable(data_heap[data_heap[data_heap[function].var_list].entries[i]].identifier_name, identifier_value)){
+					return -1;
+				}
+				decrement_references(identifier_value);
 			}
-			next_data_index = data_heap[entries[0]].source;
+			next_data_index = data_heap[function].source;
 			if(data_heap[next_data_index].type != Q_EXPR){
+				set_error("expected a Q expression for function source");
 				return -1;
 			}
 			if(data_heap[next_data_index].num_entries == 0){
+				set_error("empty function call");
 				return -1;
 			}
-			push_shadow_stack(next_data_index);
 			data_heap[next_data_index].num_references++;
-			first_entry = get_shadow_stack();
-			next_entries = malloc(sizeof(int)*data_heap[next_data_index].num_entries);
-			if(!next_entries){
+			pop_shadow_stack();
+			if(!push_shadow_stack(next_data_index)){
 				return -1;
 			}
-			for(i = 0; i < data_heap[next_data_index].num_entries; i++){
-				next_entries[i] = evaluate_q_expression(data_heap[next_data_index].entries[i], 0);
-				if(next_entries[i] == -1){
-					return -1;
-				}
-				push_shadow_stack(next_entries[i]);
-			}
-			current_shadow_stack = get_shadow_stack();
-			set_shadow_stack(prev_shadow_stack);
-			for(i = 0; i < data_heap[data_index].num_entries; i++){
-				decrement_references(pop_shadow_stack());
-			}
-			decrement_references(pop_shadow_stack());
-			free(entries);
-			entries = next_entries;
+			decrement_references(data_index);
+			decrement_references(function);
 			data_index = next_data_index;
-			first_entry->previous = get_shadow_stack();
-			set_shadow_stack(current_shadow_stack);
-			prev_shadow_stack = current_shadow_stack;
+			function = evaluate_q_expression(data_heap[data_index].entries[0], 0);
 		}
-		if(data_heap[entries[0]].type != BUILTIN_FUNCTION){
+		if(data_heap[function].type != BUILTIN_FUNCTION){
+			set_error("expected function or builtin_function for function call");
 			return -1;
 		}
-		next_data_index = data_heap[entries[0]].builtin_function(data_heap[data_index].num_entries, entries, &tail_call);
-		for(i = 0; i < data_heap[data_index].num_entries; i++){
-			decrement_references(pop_shadow_stack());
-		}
+		next_data_index = data_heap[function].builtin_function(data_index, &tail_call);
 		decrement_references(pop_shadow_stack());
-		free(entries);
+		decrement_references(function);
 		data_index = next_data_index;
 	} while(tail_call);
+
 	if(made_scope){
 		previous_scope();
 	}
+
 	return data_index;
 }
 
 int evaluate_q_expression(int data_index, int expand_q_expr){
 	int output;
-	int *entries = NULL;
-	int *next_entries;
 	int i;
-	int added_scope = 0;
-	int next_data_index;
-	int original_data_index;
 	scope *search_scope;
 	variable *var;
-	shadow_stack *current_shadow_stack;
-	shadow_stack *prev_shadow_stack;
-	shadow_stack *first_entry;
 
 	switch(data_heap[data_index].type){
 		case INT_DATA:
@@ -378,6 +363,7 @@ int evaluate_q_expression(int data_index, int expand_q_expr){
 				}
 				search_scope = search_scope->previous;
 			}
+			set_error("unrecognized variable");
 			return -1;
 		case Q_EXPR:
 		case S_EXPR:
@@ -387,96 +373,15 @@ int evaluate_q_expression(int data_index, int expand_q_expr){
 				data_heap[data_index].num_references++;
 				return data_index;
 			}
-			/*
-			if(data_heap[data_index].type == S_EXPR || expand_q_expr){
-				if(data_heap[data_index].num_entries == 0){
-					return -1;
-				}
-				entries = malloc(sizeof(int)*data_heap[data_index].num_entries);
-				if(!entries){
-					return -1;
-				}
-				for(i = 0; i < data_heap[data_index].num_entries; i++){
-					entries[i] = evaluate_q_expression(data_heap[data_index].entries[i], 0);
-					if(entries[i] == -1){
-						return -1;
-					}
-					push_shadow_stack(entries[i]);
-				}
-				if(data_heap[entries[0]].type == BUILTIN_FUNCTION){
-					output = data_heap[entries[0]].builtin_function(data_heap[data_index].num_entries, entries);
-				} else if(data_heap[entries[0]].type == FUNCTION){
-					if(data_heap[data_heap[entries[0]].var_list].type != Q_EXPR){
-						return -1;
-					}
-					if(data_heap[data_heap[entries[0]].var_list].num_entries != data_heap[data_index].num_entries - 1){
-						return -1;
-					}
-					if(!next_scope()){
-						return -1;
-					}
-					for(i = 0; i < data_heap[data_heap[entries[0]].var_list].num_entries; i++){
-						if(data_heap[data_heap[data_heap[entries[0]].var_list].entries[i]].type != IDENTIFIER){
-							return -1;
-						}
-						if(!set_variable(data_heap[data_heap[data_heap[entries[0]].var_list].entries[i]].identifier_name, entries[i + 1])){
-							return -1;
-						}
-					}
-					if(data_heap[data_heap[entries[0]].source].type != Q_EXPR){
-						return -1;
-					}
-					output = evaluate_q_expression(data_heap[entries[0]].source, 1);
-					previous_scope();
-				} else {
-					return -1;
-				}
-				for(i = 0; i < data_heap[data_index].num_entries; i++){
-					decrement_references(pop_shadow_stack());
-				}
-				free(entries);
-				return output;
-			} else {
-				data_heap[data_index].num_references++;
-				return data_index;
-			}
-			*/
 		case BUILTIN_FUNCTION:
 		case FUNCTION:
+		case NONE_DATA:
 			data_heap[data_index].num_references++;
 			return data_index;
-		case NONE_DATA:
 	}
 
+	set_error("unrecognized expression type");
 	return -1;
-}
-
-int register_builtin_function(char *name, int (*builtin_function)(int, int *, int *)){
-	int data_index;
-	variable *var;
-
-	data_index = allocate();
-	if(data_index == -1){
-		return -1;
-	}
-	data_heap[data_index].type = BUILTIN_FUNCTION;
-	data_heap[data_index].builtin_function = builtin_function;
-	var = malloc(sizeof(variable));
-	if(!var){
-		decrement_references(data_index);
-		return -1;
-	}
-	var->name = malloc(sizeof(char)*(strlen(name) + 1));
-	if(!var->name){
-		free(var);
-		decrement_references(data_index);
-		return -1;
-	}
-	strcpy(var->name, name);
-	var->data_index = data_index;
-
-	write_dictionary(&(global_scope->variables), name, var, 0);
-	return data_index;
 }
 
 int data_equal(int b, int a){
@@ -513,420 +418,321 @@ int data_equal(int b, int a){
 	return 0;
 }
 
-int add(int num_args, int *args, int *tail_call){
-	int output = 0;
-	int output_index;
-	int i;
-
-	for(i = 1; i < num_args; i++){
-		if(data_heap[args[i]].type != INT_DATA){
-			return -1;
-		}
-		output += data_heap[args[i]].int_value;
-	}
-
-	output_index = allocate();
-	if(output_index == -1){
-		return -1;
-	}
-	data_heap[output_index].type = INT_DATA;
-	data_heap[output_index].int_value = output;
-
-	return output_index;
-}
-
-int multiply(int num_args, int *args, int *tail_call){
-	int output = 1;
-	int output_index;
-	int i;
-
-	for(i = 1; i < num_args; i++){
-		if(data_heap[args[i]].type != INT_DATA){
-			return -1;
-		}
-		output *= data_heap[args[i]].int_value;
-	}
-
-	output_index = allocate();
-	if(output_index == -1){
-		return -1;
-	}
-	data_heap[output_index].type = INT_DATA;
-	data_heap[output_index].int_value = output;
-
-	return output_index;
-}
-
-int subtract(int num_args, int *args, int *tail_call){
-	int output;
-	int output_index;
-	int i;
-
-	if(num_args == 2){
-		if(data_heap[args[1]].type != INT_DATA){
-			return -1;
-		}
-		output = -data_heap[args[1]].int_value;
-	} else if(num_args > 2){
-		if(data_heap[args[1]].type != INT_DATA){
-			return -1;
-		}
-		output = data_heap[args[1]].int_value;
-		for(i = 2; i < num_args; i++){
-			if(data_heap[args[i]].type != INT_DATA){
-				return -1;
-			}
-			output -= data_heap[args[i]].int_value;
-		}
-	} else {
-		return -1;
-	}
-
-	output_index = allocate();
-	if(output_index == -1){
-		return -1;
-	}
-	data_heap[output_index].type = INT_DATA;
-	data_heap[output_index].int_value = output;
-
-	return output_index;
-}
-
-int divide(int num_args, int *args, int *tail_call){
-	int output;
-	int output_index;
-	int i;
-
-	if(num_args <= 2){
-		return -1;
-	}
-
-	if(data_heap[args[1]].type != INT_DATA){
-		return -1;
-	}
-	output = data_heap[args[1]].int_value;
-	for(i = 2; i < num_args; i++){
-		if(data_heap[args[i]].type != INT_DATA){
-			return -1;
-		}
-		output /= data_heap[args[i]].int_value;
-	}
-
-	output_index = allocate();
-	if(output_index == -1){
-		return -1;
-	}
-	data_heap[output_index].type = INT_DATA;
-	data_heap[output_index].int_value = output;
-
-	return output_index;
-}
-
-int lambda(int num_args, int *args, int *tail_call){
-	int output_index;
-
-	if(num_args != 3){
-		return -1;
-	}
-
-	output_index = allocate();
-	if(output_index == -1){
-		return -1;
-	}
-	data_heap[output_index].type = FUNCTION;
-	data_heap[output_index].var_list = args[1];
-	data_heap[output_index].source = args[2];
-	data_heap[args[1]].num_references++;
-	data_heap[args[2]].num_references++;
-
-	return output_index;
-}
-
-int set(int num_args, int *args, int *tail_call){
-	int i;
-
-	if(data_heap[args[1]].type != Q_EXPR){
-		return -1;
-	}
-
-	if(num_args != data_heap[args[1]].num_entries + 2){
-		return -1;
-	}
-
-	for(i = 0; i < data_heap[args[1]].num_entries; i++){
-		if(data_heap[data_heap[args[1]].entries[i]].type != IDENTIFIER){
-			return -1;
-		}
-		if(!set_variable(data_heap[data_heap[args[1]].entries[i]].identifier_name, args[i + 2])){
-			return -1;
-		}
-	}
-
-	data_heap[global_none].num_references++;
-	return global_none;
-}
-
-int set_index(int num_args, int *args, int *tail_call){
-	if(num_args != 4){
-		return -1;
-	}
-	if(data_heap[args[1]].type != Q_EXPR || data_heap[args[2]].type != INT_DATA){
-		return -1;
-	}
-	if(data_heap[args[2]].int_value < 0 || data_heap[args[2]].int_value >= data_heap[args[1]].num_entries){
-		return -1;
-	}
-
-	decrement_references(data_heap[args[1]].entries[data_heap[args[2]].int_value]);
-	data_heap[args[1]].entries[data_heap[args[2]].int_value] = args[3];
-	data_heap[args[3]].num_references++;
-	data_heap[global_none].num_references++;
-	return global_none;
-}
-
-int equal(int num_args, int *args, int *tail_call){
-	int output = 1;
-	int output_index;
-	int i;
-
-	if(num_args < 2){
-		return -1;
-	}
-
-	for(i = 2; i < num_args; i++){
-		if(!data_equal(args[i], args[1])){
-			output = 0;
-		}
-	}
-
-	output_index = allocate();
-	if(output_index == -1){
-		return -1;
-	}
-	data_heap[output_index].type = INT_DATA;
-	data_heap[output_index].int_value = output;
-
-	return output_index;
-}
-
-int not_equal(int num_args, int *args, int *tail_call){
-	int output = 0;
-	int output_index;
-	int i;
-
-	if(num_args < 2){
-		return -1;
-	}
-
-	for(i = 2; i < num_args; i++){
-		if(!data_equal(args[i], args[1])){
-			output = 1;
-		}
-	}
-
-	output_index = allocate();
-	if(output_index == -1){
-		return -1;
-	}
-	data_heap[output_index].type = INT_DATA;
-	data_heap[output_index].int_value = output;
-
-	return output_index;
-}
-
-int if_func(int num_args, int *args, int *tail_call){
-	if((num_args == 3 || num_args == 4) && data_heap[args[1]].type == INT_DATA && data_heap[args[1]].int_value != 0){
-		*tail_call = 1;
-		data_heap[args[2]].num_references++;
-		return args[2];
-		return evaluate_q_expression(args[2], 1);
-	} else if(num_args == 4){
-		*tail_call = 1;
-		data_heap[args[3]].num_references++;
-		return args[3];
-		return evaluate_q_expression(args[3], 1);
-	}
-
-	return -1;
-}
-
-int while_func(int num_args, int *args, int *tail_call){
+int register_builtin_function(char *name, int (*builtin_function)(int, int *)){
 	int data_index;
+	variable *var;
 
-	if(num_args != 3){
-		return -1;
-	}
-
-	data_index = evaluate_q_expression(args[1], 1);
+	data_index = allocate();
 	if(data_index == -1){
 		return -1;
 	}
-	while(data_heap[data_index].type == INT_DATA && data_heap[data_index].int_value != 0){
+	data_heap[data_index].type = BUILTIN_FUNCTION;
+	data_heap[data_index].builtin_function = builtin_function;
+	var = malloc(sizeof(variable));
+	if(!var){
+		set_error("malloc returned NULL");
 		decrement_references(data_index);
-		data_index = evaluate_q_expression(args[2], 1);
-		if(data_index == -1){
-			return -1;
-		}
-		decrement_references(data_index);
-		data_index = evaluate_q_expression(args[1], 1);
-		if(data_index == -1){
-			return -1;
-		}
+		return -1;
 	}
-	decrement_references(data_index);
+	var->name = malloc(sizeof(char)*(strlen(name) + 1));
+	if(!var->name){
+		set_error("malloc returned NULL");
+		free(var);
+		decrement_references(data_index);
+		return -1;
+	}
+	strcpy(var->name, name);
+	var->data_index = data_index;
 
+	write_dictionary(&(global_scope->variables), name, var, 0);
+	return data_index;
+}
+
+int print(int expr, int *tail_call){
+	int i;
+	int arg_value;
+
+	for(i = 1; i < data_heap[expr].num_entries; i++){
+		if(i - 1){
+			printf(" ");
+		}
+		arg_value = evaluate_q_expression(data_heap[expr].entries[i], 0);
+		if(arg_value == -1){
+			return -1;
+		}
+		print_value(arg_value);
+		decrement_references(arg_value);
+	}
+
+	printf("\n");
 	data_heap[global_none].num_references++;
 	return global_none;
 }
 
-int colon_func(int num_args, int *args, int *tail_call){
-	if(num_args == 1){
-		data_heap[global_none].num_references++;
-		return global_none;
-	}
-
-	data_heap[args[num_args - 1]].num_references++;
-	return args[num_args - 1];
-}
-
-int index_func(int num_args, int *args, int *tail_call){
-	if(num_args != 3){
-		return -1;
-	}
-	if(data_heap[args[1]].type != Q_EXPR || data_heap[args[2]].type != INT_DATA){
-		return -1;
-	}
-	if(data_heap[args[2]].int_value < 0 || data_heap[args[2]].int_value >= data_heap[args[1]].num_entries){
-		return -1;
-	}
-
-	return evaluate_q_expression(data_heap[args[1]].entries[data_heap[args[2]].int_value], 0);
-}
-
-int head(int num_args, int *args, int *tail_call){
-	int *new_entries;
-	int *less_entries;
+int add(int expr, int *tail_call){
+	int output = 0;
 	int output_index;
+	int arg_value;
 	int i;
 
-	if(num_args <= 1){
-		return -1;
-	}
-	new_entries = malloc(sizeof(int)*(num_args - 1));
-	if(!new_entries){
-		return -1;
-	}
-
-	for(i = 1; i < num_args; i++){
-		if(data_heap[args[i]].type != Q_EXPR || data_heap[args[i]].num_entries == 0){
+	for(i = 1; i < data_heap[expr].num_entries; i++){
+		arg_value = evaluate_q_expression(data_heap[expr].entries[i], 0);
+		if(arg_value == -1){
 			return -1;
 		}
-		new_entries[i - 1] = data_heap[args[i]].entries[0];
-		data_heap[new_entries[i - 1]].num_references++;
-		data_heap[args[i]].num_entries--;
-		memmove(data_heap[args[i]].entries, data_heap[args[i]].entries + 1, sizeof(int)*data_heap[args[i]].num_entries);
-		if(data_heap[args[i]].num_entries > 0){
-			less_entries = realloc(data_heap[args[i]].entries, sizeof(int)*data_heap[args[i]].num_entries);
-			if(!less_entries){
-				return -1;
-			}
-		} else {
-			less_entries = NULL;
+		if(data_heap[arg_value].type != INT_DATA){
+			set_error("expected integer value");
+			return -1;
 		}
-		data_heap[args[i]].entries = less_entries;
+		output += data_heap[arg_value].int_value;
+		decrement_references(arg_value);
 	}
 
 	output_index = allocate();
 	if(output_index == -1){
 		return -1;
 	}
-	data_heap[output_index].type = Q_EXPR;
-	data_heap[output_index].num_entries = num_args - 1;
-	data_heap[output_index].entries = new_entries;
+	data_heap[output_index].type = INT_DATA;
+	data_heap[output_index].int_value = output;
 
 	return output_index;
 }
 
-int pop(int num_args, int *args, int *tail_call){
-	int *less_entries;
+int subtract(int expr, int *tail_call){
+	int output;
 	int output_index;
-
-	if(num_args != 2){
-		return -1;
-	}
-
-	if(data_heap[args[1]].type != Q_EXPR || data_heap[args[1]].num_entries == 0){
-		return -1;
-	}
-
-	data_heap[data_heap[args[1]].entries[0]].num_references++;
-	output_index = data_heap[args[1]].entries[0];
-
-	data_heap[args[1]].num_entries--;
-	memmove(data_heap[args[1]].entries, data_heap[args[1]].entries + 1, sizeof(int)*data_heap[args[1]].num_entries);
-	if(data_heap[args[1]].num_entries > 0){
-		less_entries = realloc(data_heap[args[1]].entries, sizeof(int)*data_heap[args[1]].num_entries);
-		if(!less_entries){
-			return -1;
-		}
-		data_heap[args[1]].entries = less_entries;
-	} else {
-		data_heap[args[1]].entries = NULL;
-	}
-
-	return output_index;
-}
-
-int push(int num_args, int *args, int *tail_call){
-	int *more_entries;
-	int output_index;
-
-	if(num_args != 3){
-		return -1;
-	}
-
-	if(data_heap[args[1]].type != Q_EXPR){
-		return -1;
-	}
-
-	data_heap[args[2]].num_references++;
-	data_heap[args[1]].num_references++;
-	output_index = args[1];
-
-	data_heap[args[1]].num_entries++;
-	more_entries = realloc(data_heap[args[1]].entries, sizeof(int)*data_heap[args[1]].num_entries);
-	if(!more_entries){
-		return -1;
-	}
-	data_heap[args[1]].entries = more_entries;
-	memmove(data_heap[args[1]].entries + 1, data_heap[args[1]].entries, sizeof(int)*(data_heap[args[1]].num_entries - 1));
-	data_heap[args[1]].entries[0] = args[2];
-
-	return output_index;
-}
-
-int eval(int num_args, int *args, int *tail_call){
-	int output_index = -1;
+	int arg_value;
 	int i;
 
-	for(i = 1; i < num_args; i++){
-		if(output_index != -1){
-			decrement_references(output_index);
-		}
-		if(data_heap[args[i]].type != Q_EXPR){
-			return -1;
-		}
-		output_index = evaluate_q_expression(args[i], 1);
+	if(data_heap[expr].num_entries < 2){
+		set_error("- expects at least one argument");
+		return -1;
+	}
+
+	arg_value = evaluate_q_expression(data_heap[expr].entries[1], 0);
+	if(arg_value == -1){
+		return -1;
+	}
+	if(data_heap[arg_value].type != INT_DATA){
+		set_error("expected integer value");
+		return -1;
+	}
+	if(data_heap[expr].num_entries == 2){
+		output = -data_heap[arg_value].int_value;
+		decrement_references(arg_value);
+		output_index = allocate();
 		if(output_index == -1){
 			return -1;
 		}
+		data_heap[output_index].type = INT_DATA;
+		data_heap[output_index].int_value = output;
+
+		return output_index;
+	} else {
+		output = data_heap[arg_value].int_value;
+		decrement_references(arg_value);
+		for(i = 2; i < data_heap[expr].num_entries; i++){
+			arg_value = evaluate_q_expression(data_heap[expr].entries[i], 0);
+			if(arg_value == -1){
+				return -1;
+			}
+			if(data_heap[arg_value].type != INT_DATA){
+				set_error("expected integer value");
+				return -1;
+			}
+			output -= data_heap[arg_value].int_value;
+			decrement_references(arg_value);
+		}
+		output_index = allocate();
+		if(output_index == -1){
+			return -1;
+		}
+		data_heap[output_index].type = INT_DATA;
+		data_heap[output_index].int_value = output;
+
+		return output_index;
 	}
+}
+
+int multiply(int expr, int *tail_call){
+	int output = 1;
+	int output_index;
+	int arg_value;
+	int i;
+
+	for(i = 1; i < data_heap[expr].num_entries; i++){
+		arg_value = evaluate_q_expression(data_heap[expr].entries[i], 0);
+		if(arg_value == -1){
+			return -1;
+		}
+		if(data_heap[arg_value].type != INT_DATA){
+			set_error("expected integer value");
+			return -1;
+		}
+		output *= data_heap[arg_value].int_value;
+		decrement_references(arg_value);
+	}
+
+	output_index = allocate();
+	if(output_index == -1){
+		return -1;
+	}
+	data_heap[output_index].type = INT_DATA;
+	data_heap[output_index].int_value = output;
+
+	return output_index;
+}
+
+int if_func(int expr, int *tail_call){
+	int arg_value;
+
+	if(data_heap[expr].num_entries == 3){
+		arg_value = evaluate_q_expression(data_heap[expr].entries[1], 0);
+		if(arg_value == -1){
+			return -1;
+		}
+		if(data_heap[arg_value].type != INT_DATA || data_heap[arg_value].int_value){
+			decrement_references(arg_value);
+			if(data_heap[data_heap[expr].entries[2]].type == S_EXPR){
+				*tail_call = 1;
+				return data_heap[expr].entries[2];
+			} else {
+				return evaluate_q_expression(data_heap[expr].entries[2], 0);
+			}
+		} else {
+			decrement_references(arg_value);
+			data_heap[global_none].num_references++;
+			return global_none;
+		}
+	} else if(data_heap[expr].num_entries == 4){
+		arg_value = evaluate_q_expression(data_heap[expr].entries[1], 0);
+		if(arg_value == -1){
+			return -1;
+		}
+		if(data_heap[arg_value].type != INT_DATA || data_heap[arg_value].int_value){
+			decrement_references(arg_value);
+			if(data_heap[data_heap[expr].entries[2]].type == S_EXPR){
+				*tail_call = 1;
+				return data_heap[expr].entries[2];
+			} else {
+				return evaluate_q_expression(data_heap[expr].entries[2], 0);
+			}
+		} else {
+			decrement_references(arg_value);
+			if(data_heap[data_heap[expr].entries[3]].type == S_EXPR){
+				*tail_call = 1;
+				return data_heap[expr].entries[3];
+			} else {
+				return evaluate_q_expression(data_heap[expr].entries[3], 0);
+			}
+		}
+	} else {
+		set_error("if expects 2 or 3 arguments");
+		return -1;
+	}
+}
+
+int equal(int expr, int *tail_call){
+	int output = 1;
+	int output_index;
+	int first;
+	int arg_value;
+	int i;
+
+	if(data_heap[expr].num_entries < 2){
+		set_error("= expects at least 1 argument");
+		return -1;
+	}
+
+	first = evaluate_q_expression(data_heap[expr].entries[1], 0);
+	if(first == -1){
+		return -1;
+	}
+	push_shadow_stack(first);
+
+	for(i = 2; i < data_heap[expr].num_entries; i++){
+		arg_value = evaluate_q_expression(data_heap[expr].entries[i], 0);
+		if(arg_value == -1){
+			return -1;
+		}
+		if(!data_equal(arg_value, first)){
+			output = 0;
+			decrement_references(arg_value);
+			break;
+		}
+		decrement_references(arg_value);
+	}
+
+	decrement_references(pop_shadow_stack());
+	output_index = allocate();
+	if(output_index == -1){
+		return -1;
+	}
+	data_heap[output_index].type = INT_DATA;
+	data_heap[output_index].int_value = output;
+
+	return output_index;
+}
+
+int set(int expr, int *tail_call){
+	int set_value;
+
+	if(data_heap[expr].num_entries != 3){
+		set_error("set expects 2 arguments");
+		return -1;
+	}
+
+	if(data_heap[data_heap[expr].entries[1]].type != IDENTIFIER){
+		set_error("set expectes identifier as first argument");
+		return -1;
+	}
+
+	set_value = evaluate_q_expression(data_heap[expr].entries[2], 0);
+	if(set_value == -1){
+		return -1;
+	}
+	if(!set_variable(data_heap[data_heap[expr].entries[1]].identifier_name, set_value)){
+		return -1;
+	}
+	decrement_references(set_value);
+
+	data_heap[global_none].num_references++;
+	return global_none;
+}
+
+int lambda(int expr, int *tail_call){
+	int output_index;
+	int var_list;
+	int source;
+
+	if(data_heap[expr].num_entries != 3){
+		set_error("lambda expects 2 arguments");
+		return -1;
+	}
+
+	output_index = allocate();
+	if(output_index == -1){
+		return -1;
+	}
+	var_list = evaluate_q_expression(data_heap[expr].entries[1], 0);
+	if(var_list == -1){
+		return -1;
+	}
+	push_shadow_stack(var_list);
+	source = evaluate_q_expression(data_heap[expr].entries[2], 0);
+	if(source == -1){
+		return -1;
+	}
+	pop_shadow_stack(var_list);
+	data_heap[output_index].type = FUNCTION;
+	data_heap[output_index].var_list = var_list;
+	data_heap[output_index].source = source;
 
 	return output_index;
 }
 
 int main(int argc, char **argv){
-	char input[256];
+	char input[1024];
 	char *input_pointer;
 	int data;
 	int result;
@@ -941,29 +747,21 @@ int main(int argc, char **argv){
 	}
 	data = allocate();
 	if(data == -1){
-		fprintf(stderr, "Error: allocation failed\n");
+		fprintf(stderr, "Error: %s\n", error_message);
 		return 1;
 	}
 	data_heap[data].type = NONE_DATA;
 	push_shadow_stack(data);
 	global_none = data;
+	register_builtin_function("print", print);
 	register_builtin_function("+", add);
 	register_builtin_function("-", subtract);
 	register_builtin_function("*", multiply);
-	register_builtin_function("/", divide);
-	register_builtin_function("\\", lambda);
-	register_builtin_function("set", set);
-	register_builtin_function("=", equal);
-	register_builtin_function("!=", not_equal);
 	register_builtin_function("if", if_func);
-	register_builtin_function("while", while_func);
-	register_builtin_function(":", colon_func);
-	register_builtin_function("head", head);
-	register_builtin_function("pop", pop);
-	register_builtin_function("push", push);
-	register_builtin_function("eval", eval);
-	register_builtin_function("index", index_func);
-	register_builtin_function("seti", set_index);
+	register_builtin_function("=", equal);
+	register_builtin_function("set", set);
+	register_builtin_function("lambda", lambda);
+
 	while(1){
 		printf("lisp> ");
 		fgets(input, 256, stdin);
@@ -971,27 +769,28 @@ int main(int argc, char **argv){
 		data = get_quoted_value(&input_pointer);
 		push_shadow_stack(data);
 		if(data == -1){
-			fprintf(stderr, "Error: failed to parse expression\n");
+			fprintf(stderr, "Error: %s\n", error_message);
 			clear_shadow_stack();
 			push_shadow_stack(global_none);
 			continue;
 		}
 		result = evaluate_q_expression(data, 0);
 		if(result == -1){
-			fprintf(stderr, "Error: failed to evaluate expression\n");
+			fprintf(stderr, "Error: %s\n", error_message);
 			clear_shadow_stack();
 			push_shadow_stack(global_none);
 			decrement_references(data);
 			continue;
 		}
 
-		print_value(result);
+		if(data_heap[result].type != NONE_DATA){
+			print_value(result);
+			printf("\n");
+		}
 		pop_shadow_stack();
 		decrement_references(data);
 		decrement_references(result);
-		printf("\nnum_allocated: %d\n", num_allocated);
+		printf("num_allocated: %d\n", num_allocated);
 	}
-
-	return 0;
 }
 
