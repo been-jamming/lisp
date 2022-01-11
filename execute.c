@@ -258,8 +258,8 @@ int execute_s_expr(int data_index){
 	int made_scope = 0;
 	int tail_call;
 
+	data_heap[data_index].num_references++;
 	do{
-		data_heap[data_index].num_references++;
 		if(!push_shadow_stack(data_index)){
 			return -1;
 		}
@@ -325,6 +325,9 @@ int execute_s_expr(int data_index){
 			return -1;
 		}
 		next_data_index = data_heap[function].builtin_function(data_index, &tail_call);
+		if(next_data_index == -1){
+			return -1;
+		}
 		decrement_references(pop_shadow_stack());
 		decrement_references(function);
 		data_index = next_data_index;
@@ -595,6 +598,7 @@ int if_func(int expr, int *tail_call){
 			decrement_references(arg_value);
 			if(data_heap[data_heap[expr].entries[2]].type == S_EXPR){
 				*tail_call = 1;
+				data_heap[data_heap[expr].entries[2]].num_references++;
 				return data_heap[expr].entries[2];
 			} else {
 				return evaluate_q_expression(data_heap[expr].entries[2], 0);
@@ -613,6 +617,7 @@ int if_func(int expr, int *tail_call){
 			decrement_references(arg_value);
 			if(data_heap[data_heap[expr].entries[2]].type == S_EXPR){
 				*tail_call = 1;
+				data_heap[data_heap[expr].entries[2]].num_references++;
 				return data_heap[expr].entries[2];
 			} else {
 				return evaluate_q_expression(data_heap[expr].entries[2], 0);
@@ -621,6 +626,7 @@ int if_func(int expr, int *tail_call){
 			decrement_references(arg_value);
 			if(data_heap[data_heap[expr].entries[3]].type == S_EXPR){
 				*tail_call = 1;
+				data_heap[data_heap[expr].entries[3]].num_references++;
 				return data_heap[expr].entries[3];
 			} else {
 				return evaluate_q_expression(data_heap[expr].entries[3], 0);
@@ -731,6 +737,59 @@ int lambda(int expr, int *tail_call){
 	return output_index;
 }
 
+int colon(int expr, int *tail_call){
+	int arg_value;
+	int num_entries;
+	int i;
+
+	num_entries = data_heap[expr].num_entries;
+	if(num_entries < 2){
+		data_heap[global_none].num_references++;
+		return global_none;
+	}
+
+	for(i = 1; i < num_entries - 1; i++){
+		arg_value = evaluate_q_expression(data_heap[expr].entries[i], 0);
+		if(arg_value == -1){
+			return -1;
+		}
+		decrement_references(arg_value);
+	}
+
+	if(data_heap[data_heap[expr].entries[num_entries - 1]].type == S_EXPR){
+		*tail_call = 1;
+		data_heap[data_heap[expr].entries[num_entries - 1]].num_references++;
+		return data_heap[expr].entries[num_entries - 1];
+	} else {
+		return evaluate_q_expression(data_heap[expr].entries[num_entries - 1], 0);
+	}
+}
+
+int eval(int expr, int *tail_call){
+	int arg_value;
+	int output_index;
+
+	if(data_heap[expr].num_entries != 2){
+		set_error("eval expects exactly one argument");
+		return -1;
+	}
+
+	arg_value = evaluate_q_expression(data_heap[expr].entries[1], 0);
+	if(arg_value == -1){
+		return -1;
+	}
+	if(data_heap[arg_value].type != Q_EXPR){
+		set_error("eval expects a Q expression as its first argument");
+		return -1;
+	}
+	output_index = evaluate_q_expression(arg_value, 1);
+	if(output_index == -1){
+		return -1;
+	}
+	decrement_references(arg_value);
+	return output_index;
+}
+
 int main(int argc, char **argv){
 	char input[1024];
 	char *input_pointer;
@@ -761,6 +820,8 @@ int main(int argc, char **argv){
 	register_builtin_function("=", equal);
 	register_builtin_function("set", set);
 	register_builtin_function("lambda", lambda);
+	register_builtin_function(":", colon);
+	register_builtin_function("eval", eval);
 
 	while(1){
 		printf("lisp> ");
